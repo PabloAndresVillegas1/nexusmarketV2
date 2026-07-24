@@ -23,7 +23,8 @@ async function bootstrap() {
   app.enableCors();
 
   const port = process.env.PORT ?? 3001;
-  await app.listen(port);
+  //await app.listen(port);
+  await app.listen(port, '0.0.0.0');              //Ajustado para que escuche en todas las interfaces de red, no solo localhost
   Logger.log(`🔐 auth-service escuchando en el puerto ${port}`, 'Bootstrap');
 }
 
