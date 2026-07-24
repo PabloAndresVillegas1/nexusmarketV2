@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Valores dummy pero con el FORMATO correcto: el smoke test arranca cada
+# servicio de verdad, y orders-payments-service valida el formato de las
+# claves de Stripe al arrancar (ver env.validation.ts) — un valor tipo
+# "dummy" a secas haría fallar la validación, así que respetamos los
+# patrones reales.
+env:
+  JWT_SECRET: 'ci-test-secret-value-not-real'
+  JWT_REFRESH_SECRET: 'ci-test-refresh-secret-value'
+  INTERNAL_API_KEY: 'ci-test-internal-key-value'
+  STRIPE_SECRET_KEY: 'sk_test_ciDummyKeyForTesting123456'
+  STRIPE_WEBHOOK_SECRET: 'whsec_ciDummyKeyForTesting123456'
+  GATEWAY_URL: 'http://localhost:3000'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus_ci_password
+          POSTGRES_DB: nexusmarket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Siempre desde la raíz: así npm workspaces enlaza correctamente
+      # los paquetes internos como @nexusmarket/shared (ver README).
+      - name: Instalar dependencias del monorepo
+        run: npm ci
+
+      - name: Generar clientes de Prisma
+        run: |
+          npx prisma generate --schema=apps/auth-service/prisma/schema.prisma
+          npx prisma generate --schema=apps/catalog-service/prisma/schema.prisma
+          npx prisma generate --schema=apps/orders-payments-service/prisma/schema.prisma
+
+      # db push (no migrate deploy): no versionamos archivos de migración
+      # en este proyecto base, así que sincronizamos el schema directo
+      # contra la DB efímera del CI. En un proyecto real con historial de
+      # migraciones, esto sería `prisma migrate deploy`.
+      - name: Sincronizar schemas contra Postgres (prisma db push)
+        run: |
+          npx prisma db push --schema=apps/auth-service/prisma/schema.prisma --accept-data-loss --skip-generate
+          npx prisma db push --schema=apps/catalog-service/prisma/schema.prisma --accept-data-loss --skip-generate
+          npx prisma db push --schema=apps/orders-payments-service/prisma/schema.prisma --accept-data-loss --skip-generate
+        env:
+          DATABASE_URL: 'postgresql://nexus:nexus_ci_password@localhost:5432/nexusmarket'
+
+      - name: Lint
+        run: npx turbo run lint
+
+      - name: Tests unitarios
+        run: npx turbo run test
+
+      - name: Build de todos los servicios
+        run: npx turbo run build
+
+      - name: 'Smoke test: arrancar cada servicio y verificar /health'
+        run: |
+          set -e
+
+          boot_and_check() {
+            local dir=$1; local port=$2; local name=$3; shift 3
+            echo "→ Arrancando $name en el puerto $port..."
+            (cd "$dir" && env "$@" node dist/main.js > "/tmp/${name}.log" 2>&1 &)
+            for i in $(seq 1 10); do
+              sleep 1
+              if curl -sf "http://localhost:${port}/health" > /dev/null 2>&1; then
+                echo "✓ $name respondió healthy"
+                return 0
+              fi
+            done
+            echo "✗ $name NO respondió en /health a tiempo"
+            cat "/tmp/${name}.log"
+            exit 1
+          }
+
+          DB_AUTH='postgresql://nexus:nexus_ci_password@localhost:5432/nexusmarket?schema=auth'
+          DB_CATALOG='postgresql://nexus:nexus_ci_password@localhost:5432/nexusmarket?schema=catalog'
+          DB_ORDERS_PAYMENTS='postgresql://nexus:nexus_ci_password@localhost:5432/nexusmarket?schema=orders_payments'
+
+          boot_and_check apps/auth-service 3001 auth-service \
+            DATABASE_URL="$DB_AUTH" JWT_SECRET="$JWT_SECRET" JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET"
+
+          boot_and_check apps/catalog-service 3002 catalog-service \
+            DATABASE_URL="$DB_CATALOG" JWT_SECRET="$JWT_SECRET" INTERNAL_API_KEY="$INTERNAL_API_KEY"
+
+          boot_and_check apps/orders-payments-service 3003 orders-payments-service \
+            DATABASE_URL="$DB_ORDERS_PAYMENTS" JWT_SECRET="$JWT_SECRET" INTERNAL_API_KEY="$INTERNAL_API_KEY" \
+            CATALOG_SERVICE_URL="http://localhost:3002" \
+            STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY" STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET"
+
+          boot_and_check apps/api-gateway 3000 api-gateway \
+            AUTH_SERVICE_URL="http://localhost:3001" CATALOG_SERVICE_URL="http://localhost:3002" \
+            ORDERS_PAYMENTS_SERVICE_URL="http://localhost:3003"

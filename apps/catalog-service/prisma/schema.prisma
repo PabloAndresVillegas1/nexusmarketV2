@@ -1,0 +1,46 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+  output          = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["catalog"]
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  slug      String    @unique
+  products  Product[]
+  createdAt DateTime  @default(now())
+
+  @@map("categories")
+  @@schema("catalog")
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  // sellerId apunta a un User del auth-service. NO es una foreign key real:
+  // en un esquema de microservicios, cada servicio es dueño de su propia
+  // base de datos y no puede hacer JOIN contra la tabla de otro servicio.
+  // La integridad se valida en la capa de aplicación (JWT) en vez de en la DB.
+  sellerId    String
+  title       String
+  description String
+  priceCents  Int
+  currency    String   @default("USD")
+  stock       Int      @default(0)
+  isActive    Boolean  @default(true)
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([sellerId])
+  @@index([categoryId])
+  @@map("products")
+  @@schema("catalog")
+}

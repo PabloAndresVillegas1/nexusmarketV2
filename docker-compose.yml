@@ -1,0 +1,128 @@
+version: "3.9"
+
+# NOTA DE ARQUITECTURA: en este entorno de desarrollo, cada microservicio
+# expone su puerto al host (para poder probarlos individualmente con
+# curl/Postman mientras aprendes). En un despliegue real, SOLO el
+# api-gateway debería tener un puerto público — auth-service,
+# catalog-service y orders-payments-service quedarían accesibles
+# únicamente dentro de la red interna de Docker/Kubernetes, eliminando
+# sus bloques "ports:". El frontend y el mundo exterior solo conocen
+# la URL del api-gateway.
+#
+# v2.0: order-service y payment-service se fusionaron en un solo servicio
+# (orders-payments-service) para caber en el límite de 5 servicios del
+# plan gratuito de Railway. Ver ARCHITECTURE.md para el detalle de qué
+# cambió (la comunicación entre "crear pedido" y "confirmar pago" pasó de
+# HTTP interno a una llamada de método directa).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexusmarket-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus_dev_password
+      POSTGRES_DB: nexusmarket
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexusmarket-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  auth-service:
+    build: ./apps/auth-service
+    container_name: nexusmarket-auth-service
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - ./apps/auth-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  catalog-service:
+    build: ./apps/catalog-service
+    container_name: nexusmarket-catalog-service
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    env_file:
+      - ./apps/catalog-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  orders-payments-service:
+    build: ./apps/orders-payments-service
+    container_name: nexusmarket-orders-payments-service
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    env_file:
+      - ./apps/orders-payments-service/.env
+    environment:
+      CATALOG_SERVICE_URL: "http://catalog-service:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      catalog-service:
+        condition: service_started
+
+  api-gateway:
+    build: ./apps/api-gateway
+    container_name: nexusmarket-api-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./apps/api-gateway/.env
+    environment:
+      # Dentro de Compose, cada servicio se resuelve por su nombre —
+      # no por localhost.
+      AUTH_SERVICE_URL: "http://auth-service:3001"
+      CATALOG_SERVICE_URL: "http://catalog-service:3002"
+      ORDERS_PAYMENTS_SERVICE_URL: "http://orders-payments-service:3003"
+    depends_on:
+      - auth-service
+      - catalog-service
+      - orders-payments-service
+
+  web:
+    build: ./apps/web
+    container_name: nexusmarket-web
+    restart: unless-stopped
+    ports:
+      - "3006:3006"
+    env_file:
+      - ./apps/web/.env
+    environment:
+      GATEWAY_URL: "http://api-gateway:3000"
+    depends_on:
+      - api-gateway
+
+  # ---- Servicios pendientes (se activan a medida que avancemos) ----
+  # notification-service:
+  #   build: ./apps/notification-service
+  #   ports: ["3005:3005"]
+  #   depends_on: [redis]
+
+volumes:
+  postgres_data:

@@ -1,0 +1,81 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+  output          = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["orders_payments"]
+}
+
+enum OrderStatus {
+  pending
+  paid
+  shipped
+  completed
+  cancelled
+
+  @@schema("orders_payments")
+}
+
+enum PaymentStatus {
+  pending
+  succeeded
+  failed
+
+  @@schema("orders_payments")
+}
+
+model Order {
+  id         String      @id @default(uuid())
+  // Igual que antes: apunta a un User de auth-service, sin FK real (ese
+  // límite de servicio sigue existiendo). buyerId sí es local y estable.
+  buyerId    String
+  status     OrderStatus @default(pending)
+  totalCents Int
+  currency   String      @default("USD")
+  items      OrderItem[]
+  // Antes esto no podía ser una relación real de Prisma: Order y Payment
+  // vivían en servicios (y schemas de DB) distintos. Al fusionarlos, sí
+  // podemos modelar la relación de verdad — una ventaja concreta de haber
+  // unido estos dos límites de servicio.
+  payment    Payment?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([buyerId])
+  @@map("orders")
+  @@schema("orders_payments")
+}
+
+model OrderItem {
+  id             String  @id @default(uuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  // Sigue sin haber FK hacia Product: ese sí es un límite de servicio
+  // real que se mantiene (catalog-service sigue siendo independiente).
+  productId      String
+  quantity       Int
+  unitPriceCents Int
+
+  @@map("order_items")
+  @@schema("orders_payments")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  orderId         String        @unique
+  order           Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  buyerId         String
+  stripeSessionId String        @unique
+  amountCents     Int
+  currency        String        @default("USD")
+  status          PaymentStatus @default(pending)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("payments")
+  @@schema("orders_payments")
+}
