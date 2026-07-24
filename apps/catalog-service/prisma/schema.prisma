@@ -1,7 +1,15 @@
+/* generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+  output          = "../generated/client"
+} */
+
+// Ajustado por compatibilidad con Railway y Alpine OpenSSL 3.0
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["multiSchema"]
   output          = "../generated/client"
+  binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
